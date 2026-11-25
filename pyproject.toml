@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nonebot-plugin-circuit-plotter"
+version = "0.1.0"
+description = "Deterministic circuit schematics for NoneBot2 and Qiqi AI chat"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = [
+    "nonebot2>=2.4.4",
+    "nonebot-adapter-onebot>=2.4.6",
+    "Pillow>=10.1",
+]
+
+[project.urls]
+Repository = "https://github.com/LoCCai/nonebot-plugin-circuit-plotter"
+
+[tool.setuptools.packages.find]
+include = ["nonebot_plugin_circuit_plotter*"]
