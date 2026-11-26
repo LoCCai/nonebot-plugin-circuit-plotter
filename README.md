@@ -10,6 +10,8 @@ pip install git+https://github.com/LoCCai/nonebot-plugin-circuit-plotter.git
 
 在 NoneBot 项目中加载 `nonebot_plugin_circuit_plotter`。可用 `/电路图帮助` 查看语法，发 `/画电路` 后再发源码，或把代码放在同一条消息里。命令前缀由宿主配置决定。
 
+`/画电路 画一个LED显示计数器，从1每跳加一到16复位。` 可直接生成 Arduino Nano 和 TM1637 的接线图。支持 0 至 9999 的递增区间。显示到上限后，下一个有效按键回到起点。
+
 已有 MoEllmChats 时，在宿主加载插件后调用 `nonebot_plugin_circuit_plotter.llm.register_tools()`。`render_circuit` 接受一个 `source` 参数，在当前会话发送图。
 
 ## RC 低通

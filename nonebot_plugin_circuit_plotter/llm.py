@@ -3,6 +3,7 @@ from .core import MAX_SOURCE, TOOL_DESCRIPTION, CircuitError
 from .service import render
 
 _TOOL = "render_circuit"
+DELIVERED = "原理图已生成并送到当前会话。"
 
 
 async def _handle(*, _tool_context, source):
@@ -14,7 +15,7 @@ async def _handle(*, _tool_context, source):
     except CircuitError as error:
         return ToolResult(text=str(error), structured={"status": "invalid_or_busy"})
     await deliver_image(_tool_context, png)
-    return ToolResult(text="原理图已生成并送到当前会话。请说明电路工作原理。",
+    return ToolResult(text=DELIVERED + "请说明电路工作原理。",
                       structured={"status": "rendered", "source": source},
                       metadata={"skip_image_vision": True})
 

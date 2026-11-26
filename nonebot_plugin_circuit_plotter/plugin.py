@@ -6,6 +6,7 @@ from nonebot.params import ArgPlainText, CommandArg
 from nonebot.typing import T_State
 
 from .core import TOOL_DESCRIPTION, CircuitError
+from .counter import parse_counter_request
 from .service import render
 
 draw = on_command("画电路", priority=15, block=True)
@@ -26,10 +27,14 @@ async def receive_arguments(state: T_State, args: Annotated[Message, CommandArg(
 @draw.got("circuit_source", prompt="请发送电路代码。查看示例用 /电路图帮助。")
 async def draw_circuit(source: Annotated[str, ArgPlainText("circuit_source")]):
     source = source.strip()
+    counter = parse_counter_request(source)
+    if counter is not None:
+        source = counter.source
     if source.startswith("```circuit\n") and source.endswith("\n```"):
         source = source[len("```circuit\n"):-len("\n```")]
     try:
         png = await render(source)
     except CircuitError as error:
         await draw.finish(str(error))
-    await draw.finish(MessageSegment.image(png))
+    output = MessageSegment.image(png)
+    await draw.finish(output + MessageSegment.text('\n' + counter.explanation) if counter else output)
