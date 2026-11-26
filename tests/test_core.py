@@ -43,7 +43,7 @@ LED D1 Y X 2V
     assert render_png(src).startswith(b"\x89PNG\r\n\x1a\n")
 
 
-@pytest.mark.parametrize("name", ["AND", "或门"])
+@pytest.mark.parametrize("name", ["AND", "或门", "XOR", "NAND", "NOR", "XNOR"])
 def test_gate_pins_touch_the_outline(name):
     source = f"node A 1 1\nnode B 1 3\nnode Y 3 2\n{name} U1 A B Y"
     with Image.open(io.BytesIO(render_png(source))) as image:

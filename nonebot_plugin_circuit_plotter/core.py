@@ -16,9 +16,13 @@ _IDENT = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,23}")
 _PIN_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9_+./-]{0,13}")
 _DISPLAY_VALUE = re.compile(r"[0-9](?:\.?[0-9]){0,3}\.?")
 _TWO_PIN = {"R", "C", "L", "D", "LED", "SW", "V", "VAC", "BAT"}
-_GATES = {"AND", "OR", "NOT", "OPAMP"}
+_CURVED_GATES = {"OR", "NOR", "XOR", "XNOR"}
+_INVERTING_GATES = {"NOT", "NAND", "NOR", "XNOR"}
+_GATES = {"AND", "OPAMP"} | _CURVED_GATES | _INVERTING_GATES
 _BLOCKS = {"IC", "MODULE", "DISPLAY"}
 _ALIASES = {"与": "AND", "与门": "AND", "或": "OR", "或门": "OR", "非": "NOT", "非门": "NOT",
+            "异或": "XOR", "异或门": "XOR", "同或": "XNOR", "同或门": "XNOR",
+            "与非门": "NAND", "或非门": "NOR",
             "MCU": "IC", "LED7": "DISPLAY", "VDC": "V"}
 _EXAMPLE = """title RC 低通
 node IN 1 1
@@ -34,7 +38,7 @@ TOOL_DESCRIPTION = (
     "绘制电路原理图，确定性渲染而且可复制源码。仅提供 source 文本。"
     "先定义 node 名称 x y（整数，x 0~20、y 0~14）；"
     "R/C/L/D/LED/SW/V/VAC/BAT 编号 节点A 节点B [数值]（同横或同纵，相距至少两格，V=直流、VAC=交流、BAT=电池）；"
-    "AND/OR/OPAMP 编号 上输入 下输入 输出（输入在同一列，输出在右侧两格以上、高度在两输入之间），"
+    "AND/OR/XOR/NAND/NOR/XNOR/OPAMP 编号 上输入 下输入 输出（输入在同一列，输出在右侧两格以上、高度在两输入之间），"
     "NOT 编号 输入 输出（同一行，输出在右侧两格以上）；"
     "IC/MCU 编号 芯片型号 引脚=节点 …（如 IC U1 ESP32 VCC=PWR IO23=OUT GND=RET）；"
     "MODULE 编号 模块型号 引脚=节点 …（如 MODULE PS1 DC-DC VIN=IN VOUT=OUT GND=RET）；"
@@ -42,7 +46,9 @@ TOOL_DESCRIPTION = (
     "芯片、模块和数码管的节点须分在左右两列，两列相距至少四格，每边至少一针。数码管可画 1 至 4 位。"
     "引脚按用户给出或已知的定义写明；电路图只表达接线和显示示例。VCC 节点 [标注] 画电源端。"
     "wire 节点A 节点B [折点…]、ground 节点、label 节点 文字、title 文字。"
-    "导线各段同横或同纵。示例：\n" + EXAMPLE
+    "导线各段同横或同纵。使用同一个已定义节点表示实际连接，也可用 wire 连接两个不同坐标的节点。"
+    "半加器用 XOR 求和、AND 求进位；全加器可用两组 XOR/AND 和 OR，或用 IC 的命名引脚绘制级联。"
+    "请优先交付完整源码；渲染器返回行号时按提示修改。RC 示例：\n" + EXAMPLE
 )
 
 
@@ -282,8 +288,9 @@ def _draw_gate(draw, part, points, ink, wire, bg):
     left, right = mid-42, mid+42
     top, bottom = y-28, y+28
     kind = part.kind
+    tip = right-12 if kind in _INVERTING_GATES else right
     terminals = [(left, y)] if kind == "NOT" else [(left, y-13), (left, y+13)]
-    if kind == "OR":
+    if kind in _CURVED_GATES:
         back = _cubic((left, top), (left+21, y-13), (left+21, y+13), (left, bottom))
         terminals = [back[4], back[12]]
 
@@ -291,22 +298,23 @@ def _draw_gate(draw, part, points, ink, wire, bg):
         draw.line([(x, sy), (left-12, sy), (left-12, py), (px, py)], fill=wire, width=4, joint="curve")
     draw.line([(right, y), (x1, y)], fill=wire, width=4)
     if kind in {"NOT", "OPAMP"}:
-        tip = right-12 if kind == "NOT" else right
         draw.polygon([(left, top), (tip, y), (left, bottom)], outline=ink, fill=bg, width=4)
-        if kind == "NOT":
-            draw.ellipse((tip, y-6, right, y+6), outline=ink, fill=bg, width=3)
-        else:
+        if kind == "OPAMP":
             for symbol, py in [("+", y-13), ("−", y+13)]:
                 draw.text((left+13, py), symbol, font=_font(14), fill=ink, anchor="mm")
-    elif kind == "AND":
-        stem = right-28
-        draw.arc((stem-28, top, right, bottom), -90, 90, fill=ink, width=4)
+    elif kind in {"AND", "NAND"}:
+        stem = tip-28
+        draw.arc((stem-28, top, tip, bottom), -90, 90, fill=ink, width=4)
         draw.line([(stem, top), (left, top), (left, bottom), (stem, bottom)], fill=ink, width=4)
     else:
-        upper = _cubic((left, top), (mid-2, top-1), (right-18, top+6), (right, y))
+        upper = _cubic((left, top), (mid-2, top-1), (tip-18, top+6), (tip, y))
         lower = [(x, 2*y-py) for x, py in reversed(upper)]
         draw.line(upper+lower, fill=ink, width=4, joint="curve")
         draw.line(back, fill=ink, width=4, joint="curve")
+        if kind in {"XOR", "XNOR"}:
+            draw.line([(x-9, py) for x, py in back], fill=ink, width=3, joint="curve")
+    if kind in _INVERTING_GATES:
+        draw.ellipse((tip, y-6, right, y+6), outline=ink, fill=bg, width=3)
     draw.text((mid, top-7), f"{part.name}  {part.value or kind}", font=_font(14), fill=ink, anchor="mb")
 
 
