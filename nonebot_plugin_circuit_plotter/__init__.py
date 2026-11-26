@@ -15,7 +15,7 @@ __plugin_meta__ = PluginMetadata(
              "detail_des": "发送 /画电路，再发送代码，或把多行代码写在同一条消息中。"},
             {"func": "电路图帮助", "trigger_method": "指令",
              "trigger_condition": "/电路图帮助", "brief_des": "查看电路语法和 RC 低通示例",
-             "detail_des": "支持元件、导线、接地、节点标注和标题。"},
+             "detail_des": "支持基础元件、逻辑门、芯片、电源模块、数码管、导线和节点标注。"},
         ],
     },
 )

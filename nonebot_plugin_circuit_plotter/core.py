@@ -13,8 +13,13 @@ MAX_SOURCE = 5000
 _GRID = 64
 _MARGIN = 56
 _IDENT = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,23}")
-_TWO_PIN = {"R", "C", "L", "D", "LED", "SW", "V"}
+_PIN_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9_+./-]{0,13}")
+_DISPLAY_VALUE = re.compile(r"[0-9](?:\.?[0-9]){0,3}\.?")
+_TWO_PIN = {"R", "C", "L", "D", "LED", "SW", "V", "VAC", "BAT"}
 _GATES = {"AND", "OR", "NOT", "OPAMP"}
+_BLOCKS = {"IC", "MODULE", "DISPLAY"}
+_ALIASES = {"与": "AND", "与门": "AND", "或": "OR", "或门": "OR", "非": "NOT", "非门": "NOT",
+            "MCU": "IC", "LED7": "DISPLAY", "VDC": "V"}
 _EXAMPLE = """title RC 低通
 node IN 1 1
 node OUT 5 1
@@ -28,8 +33,14 @@ EXAMPLE = _EXAMPLE
 TOOL_DESCRIPTION = (
     "绘制电路原理图，确定性渲染而且可复制源码。仅提供 source 文本。"
     "先定义 node 名称 x y（整数，x 0~20、y 0~14）；"
-    "R/C/L/D/LED/SW/V 编号 节点A 节点B [数值]（两节点同横或同纵，间隔至少两格）；"
-    "AND/OR/OPAMP 编号 输入1 输入2 输出，NOT 编号 输入 输出；"
+    "R/C/L/D/LED/SW/V/VAC/BAT 编号 节点A 节点B [数值]（同横或同纵，相距至少两格，V=直流、VAC=交流、BAT=电池）；"
+    "AND/OR/OPAMP 编号 上输入 下输入 输出（输入在同一列，输出在右侧两格以上、高度在两输入之间），"
+    "NOT 编号 输入 输出（同一行，输出在右侧两格以上）；"
+    "IC/MCU 编号 芯片型号 引脚=节点 …（如 IC U1 ESP32 VCC=PWR IO23=OUT GND=RET）；"
+    "MODULE 编号 模块型号 引脚=节点 …（如 MODULE PS1 DC-DC VIN=IN VOUT=OUT GND=RET）；"
+    "DISPLAY/LED7 编号 数字 引脚=节点 …（如 DISPLAY DS1 12.3 A=SEG COM=RET）；"
+    "芯片、模块和数码管的节点须分在左右两列，两列相距至少四格，每边至少一针。数码管可画 1 至 4 位。"
+    "引脚按用户给出或已知的定义写明；电路图只表达接线和显示示例。VCC 节点 [标注] 画电源端。"
     "wire 节点A 节点B [折点…]、ground 节点、label 节点 文字、title 文字。"
     "导线各段同横或同纵。示例：\n" + EXAMPLE
 )
@@ -46,6 +57,7 @@ class Part:
     nodes: tuple[str, ...]
     value: str
     line: int
+    pins: tuple[str, ...] = ()
 
 
 def _identifier(value):
@@ -58,6 +70,24 @@ def _text(value):
     if not 1 <= len(value) <= 64 or not value.isprintable():
         raise CircuitError("标注须为 1 至 64 个可显示字符")
     return value
+
+
+def _parse_block(kind, name, fields, line):
+    if not 4 <= len(fields) <= 26:
+        raise CircuitError(f"格式为 {kind} 编号 型号或显示值 引脚=节点 …，共 2 至 24 针")
+    value = _text(fields[1])
+    if kind == "DISPLAY" and not _DISPLAY_VALUE.fullmatch(value):
+        raise CircuitError("数码管显示值须为 1 至 4 个数字，可带小数点")
+    pins, nodes = [], []
+    for terminal in fields[2:]:
+        label, _, node = terminal.partition("=")
+        if not _PIN_LABEL.fullmatch(label):
+            raise CircuitError("引脚格式为 引脚=节点，引脚名最多 14 个字符")
+        pins.append(label)
+        nodes.append(_identifier(node))
+    if len({label.upper() for label in pins}) != len(pins) or len(set(nodes)) != len(nodes):
+        raise CircuitError("引脚名和引脚节点在同一元件内须各不相同")
+    return Part(kind, name, tuple(nodes), value, line, tuple(pins))
 
 
 def _parse(source):
@@ -101,30 +131,39 @@ def _parse(source):
                 if len(fields) != 1:
                     raise CircuitError("格式为 ground 节点")
                 parts.append(Part(kind, "", tuple(fields), "", number))
+            elif kind == "vcc":
+                fields = rest.split(maxsplit=1)
+                if not fields:
+                    raise CircuitError("格式为 VCC 节点 [标注]")
+                parts.append(Part(kind, "", (fields[0],), _text(fields[1]) if len(fields) == 2 else "VCC", number))
             elif kind == "label":
                 fields = rest.split(maxsplit=1)
                 if len(fields) != 2:
                     raise CircuitError("格式为 label 节点 文字")
                 parts.append(Part(kind, "", (fields[0],), _text(fields[1]), number))
-            elif kind.upper() in _TWO_PIN | _GATES:
-                kind = kind.upper()
-                pin_count = 3 if kind in _GATES - {"NOT"} else 2
-                fields = rest.split(maxsplit=pin_count + 1)
-                if not pin_count + 1 <= len(fields) <= pin_count + 2:
-                    raise CircuitError(f"{kind} 需要元件编号和 {pin_count} 个引脚节点")
+            elif (symbol := _ALIASES.get(kind.upper(), kind.upper())) in _TWO_PIN | _GATES | _BLOCKS:
+                if not fields:
+                    raise CircuitError(f"{symbol} 需要元件编号和引脚")
                 name = _identifier(fields[0])
                 if name in names:
                     raise CircuitError("元件编号已使用")
                 names.add(name)
-                value = _text(fields[-1]) if len(fields) == pin_count + 2 else ""
-                parts.append(Part(kind, name, tuple(fields[1:pin_count+1]), value, number))
+                if symbol in _BLOCKS:
+                    parts.append(_parse_block(symbol, name, fields, number))
+                else:
+                    pin_count = 3 if symbol in _GATES - {"NOT"} else 2
+                    fields = rest.split(maxsplit=pin_count + 1)
+                    if len(fields) < pin_count + 1:
+                        raise CircuitError(f"{symbol} 需要元件编号和 {pin_count} 个引脚节点")
+                    value = _text(fields[-1]) if len(fields) == pin_count + 2 else ""
+                    parts.append(Part(symbol, name, tuple(fields[1:pin_count+1]), value, number))
             else:
                 raise CircuitError("未知指令或元件类型")
         except CircuitError as error:
             raise CircuitError(f"第 {number} 行 · {error}") from None
     if len(nodes) > 56 or len(parts) > 64:
         raise CircuitError("最多 56 个节点和 64 条连线、标注或元件")
-    if not nodes or not any(part.kind not in {"ground", "label"} for part in parts):
+    if not nodes or not any(part.kind not in {"ground", "label", "vcc"} for part in parts):
         raise CircuitError("请至少定义一条导线或一个元件")
     for part in parts:
         try:
@@ -144,6 +183,10 @@ def _parse(source):
                 start[0] == points[1][0] and start[1] < end[1] < points[1][1])
             if end[0]-start[0] < 2 or not aligned:
                 raise CircuitError(f"第 {part.line} 行 · 门或运放输入位于左侧，输出与输入中间对齐")
+        elif part.kind in _BLOCKS:
+            columns = sorted({x for x, _ in points})
+            if len(columns) != 2 or columns[1]-columns[0] < 4:
+                raise CircuitError(f"第 {part.line} 行 · 引脚须分在左右两列，间隔至少四格")
     return nodes, parts, title
 
 
@@ -177,7 +220,7 @@ def _draw_part(draw, part, points, ink, wire, accent, bg):
         draw.line([pt(*point) for point in coords], fill=fill, width=3, joint="curve")
 
     kind = part.kind
-    edges = {"C": (-6, 6), "D": (-13, 13), "LED": (-13, 13), "V": (-16, 16)}
+    edges = {"C": (-6, 6), "D": (-13, 13), "LED": (-13, 13), "V": (-18, 18), "VAC": (-18, 18), "BAT": (-12, 12)}
     left, right = edges.get(kind, (-26, 26))
     stroke([(-half, 0), (left, 0)], wire)
     stroke([(right, 0), (half, 0)], wire)
@@ -201,59 +244,127 @@ def _draw_part(draw, part, points, ink, wire, accent, bg):
             u, v = pt(x, 0)
             draw.ellipse((u-3, v-3, u+3, v+3), outline=ink, fill=bg, width=2)
         stroke([(-22, -2), (18, -17)])
+    elif kind == "BAT":
+        stroke([(-12, -16), (-12, 16)])
+        stroke([(-4, -9), (-4, 9)])
+        stroke([(4, -16), (4, 16)])
+        stroke([(12, -9), (12, 9)])
     else:
         x, y = centre
-        draw.ellipse((x-16, y-16, x+16, y+16), outline=ink, width=3)
-        stroke([(-11, 0), (-3, 0)])
-        stroke([(-7, -4), (-7, 4)])
-        stroke([(3, 0), (10, 0)])
+        draw.ellipse((x-18, y-18, x+18, y+18), outline=ink, width=3)
+        if kind == "VAC":
+            stroke([(i, -6*math.sin(i*math.pi/11)) for i in range(-11, 12)])
+        else:
+            stroke([(-11, 0), (-3, 0)])
+            stroke([(-7, -4), (-7, 4)])
+            stroke([(3, 0), (10, 0)])
     x, y = centre
     label = f"{part.name}  {part.value}".strip()
-    draw.text((x+23, y) if dy else (x, y-27 if kind == "LED" else y-18),
+    rise = {"LED": 30, "V": 22, "VAC": 22}.get(kind, 18)
+    draw.text((x+23, y) if dy else (x, y-rise),
               label, fill=ink, font=_font(14), anchor="lm" if dy else "mb")
+
+
+def _cubic(start, control1, control2, end):
+    path = []
+    for step in range(17):
+        t = step/16
+        s = 1-t
+        path.append(tuple(round(s**3*a + 3*s*s*t*b + 3*s*t*t*c + t**3*d)
+                          for a, b, c, d in zip(start, control1, control2, end)))
+    return path
 
 
 def _draw_gate(draw, part, points, ink, wire, bg):
     x0, _ = points[0]
     x1, y = points[-1]
-    mid = (x0+x1)/2
-    left, right = mid-26, mid+26
+    mid = (x0+x1)//2
+    left, right = mid-42, mid+42
+    top, bottom = y-28, y+28
     kind = part.kind
-    for index, (x, sy) in enumerate(points[:-1]):
-        py = y if kind == "NOT" else y+(-10 if index == 0 else 10)
-        draw.line([(x, sy), (left-16, sy), (left-16, py), (left, py)], fill=wire, width=3)
+    terminals = [(left, y)] if kind == "NOT" else [(left, y-13), (left, y+13)]
+    if kind == "OR":
+        back = _cubic((left, top), (left+21, y-13), (left+21, y+13), (left, bottom))
+        terminals = [back[4], back[12]]
+
+    for (x, sy), (px, py) in zip(points[:-1], terminals):
+        draw.line([(x, sy), (left-12, sy), (left-12, py), (px, py)], fill=wire, width=4, joint="curve")
+    draw.line([(right, y), (x1, y)], fill=wire, width=4)
     if kind in {"NOT", "OPAMP"}:
-        tip = right-7 if kind == "NOT" else right
-        draw.polygon([(left, y-23), (tip, y), (left, y+23)], outline=ink, fill=bg, width=3)
+        tip = right-12 if kind == "NOT" else right
+        draw.polygon([(left, top), (tip, y), (left, bottom)], outline=ink, fill=bg, width=4)
         if kind == "NOT":
-            draw.ellipse((tip, y-4, tip+8, y+4), outline=ink, width=2)
+            draw.ellipse((tip, y-6, right, y+6), outline=ink, fill=bg, width=3)
         else:
-            for symbol, py in [("+", y-9), ("−", y+10)]:
-                draw.text((left+9, py), symbol, font=_font(14), fill=ink, anchor="mm")
+            for symbol, py in [("+", y-13), ("−", y+13)]:
+                draw.text((left+13, py), symbol, font=_font(14), fill=ink, anchor="mm")
     elif kind == "AND":
-        draw.arc((mid-5, y-23, right, y+23), -90, 90, fill=ink, width=3)
-        draw.line([(mid+10, y-23), (left, y-23), (left, y+23), (mid+10, y+23)], fill=ink, width=3)
+        stem = right-28
+        draw.arc((stem-28, top, right, bottom), -90, 90, fill=ink, width=4)
+        draw.line([(stem, top), (left, top), (left, bottom), (stem, bottom)], fill=ink, width=4)
     else:
-        draw.line([(left, y-23), (mid+1, y-22), (right, y), (mid+1, y+22), (left, y+23)],
-                  fill=ink, width=3, joint="curve")
-        draw.arc((left-14, y-23, left+10, y+23), -75, 75, fill=ink, width=3)
-    draw.line([(right, y), (x1, y)], fill=wire, width=3)
-    draw.text((mid, y-29), f"{part.name}  {part.value or kind}", font=_font(14), fill=ink, anchor="mb")
+        upper = _cubic((left, top), (mid-2, top-1), (right-18, top+6), (right, y))
+        lower = [(x, 2*y-py) for x, py in reversed(upper)]
+        draw.line(upper+lower, fill=ink, width=4, joint="curve")
+        draw.line(back, fill=ink, width=4, joint="curve")
+    draw.text((mid, top-7), f"{part.name}  {part.value or kind}", font=_font(14), fill=ink, anchor="mb")
+
+
+_SEGMENTS = (((4, -22), (20, -22)), ((23, -18), (23, -4)), ((23, 4), (23, 18)),
+             ((4, 22), (20, 22)), ((1, 4), (1, 18)), ((1, -18), (1, -4)), ((4, 0), (20, 0)))
+_DIGITS = dict(zip("0123456789", ("abcdef", "bc", "abdeg", "abcdg", "bcfg",
+                                  "acdfg", "acdefg", "abc", "abcdefg", "abcdfg")))
+
+
+def _draw_digits(draw, value, x, y, accent, inactive):
+    for digit, dot in re.findall(r"(\d)(\.?)", value):
+        for key, segment in zip("abcdefg", _SEGMENTS):
+            draw.line([(x+px, y+py) for px, py in segment], fill=accent if key in _DIGITS[digit] else inactive, width=4)
+        if dot:
+            draw.ellipse((x+27, y+20, x+31, y+24), fill=accent)
+        x += 34
+
+
+def _draw_block(draw, part, points, ink, wire, accent, bg, inactive):
+    x0 = min(x for x, _ in points)
+    left, right = x0+28, max(x for x, _ in points)-28
+    top, bottom = min(y for _, y in points)-36, max(y for _, y in points)+36
+    name_font = _font(14)
+    pin_font = _font(12)
+    pin_left = max(pin_font.getlength(label) for label, (x, _) in zip(part.pins, points) if x == x0)
+    pin_right = max(pin_font.getlength(label) for label, (x, _) in zip(part.pins, points) if x != x0)
+    left_edge, right_edge = left+10+pin_left, right-10-pin_right
+    inner_width = 34*len(part.value.replace(".", "")) if part.kind == "DISPLAY" else 0
+    if right_edge-left_edge < inner_width+8:
+        raise CircuitError(f"第 {part.line} 行 · 请加宽引脚列间距，为型号或数字留出空间")
+
+    draw.rounded_rectangle((left, top, right, bottom), radius=6, fill=bg, outline=ink, width=3)
+    label = part.name if part.kind == "DISPLAY" else f"{part.name}  {part.value}"
+    draw.text(((left+right)/2, top-5), label, font=name_font, fill=ink, anchor="mb")
+    for label, (x, y) in zip(part.pins, points):
+        is_left = x == x0
+        edge = left if is_left else right
+        draw.line([(x, y), (edge, y)], fill=wire, width=3)
+        draw.text((edge+8 if is_left else edge-8, y), label, font=pin_font, fill=ink, anchor="lm" if is_left else "rm")
+    if part.kind == "DISPLAY":
+        _draw_digits(draw, part.value, (left_edge+right_edge-inner_width)/2, (top+bottom)/2, accent, inactive)
 
 
 def render_png(source: str, *, theme: str = "light") -> bytes:
     if theme not in {"light", "dark"}:
         raise CircuitError("主题须为 light 或 dark")
     nodes, parts, title = _parse(source)
-    ink, wire, accent, bg = (
-        ("#e6eef7", "#80bac5", "#f2bd79", "#151b24") if theme == "dark"
-        else ("#1b2636", "#226478", "#9c4a15", "#ffffff")
+    ink, wire, accent, bg, inactive = (
+        ("#e6eef7", "#80bac5", "#f2bd79", "#151b24", "#533f3b") if theme == "dark"
+        else ("#1b2636", "#226478", "#9c4a15", "#ffffff", "#ebd6c9")
     )
     min_x = min(x for x, _ in nodes.values())
     min_y = min(y for _, y in nodes.values())
     max_x = max(x for x, _ in nodes.values()) - min_x
     max_y = max(y for _, y in nodes.values()) - min_y
-    top = _MARGIN + (36 if title else 0)
+    top = _MARGIN
+    if title:
+        top += 56 if any(part.kind in _BLOCKS for part in parts) else 36
     points = {key: ((x-min_x)*_GRID+_MARGIN, (y-min_y)*_GRID+top) for key, (x, y) in nodes.items()}
     text_bounds = [(_MARGIN, _font(20).getlength(title), "start")]
     for part in parts:
@@ -263,6 +374,14 @@ def render_png(source: str, *, theme: str = "light") -> bytes:
         x2, _ = points[part.nodes[-1]]
         if part.kind == "label":
             text_bounds.append((x1, _font(14).getlength(part.value), "start"))
+            continue
+        if part.kind in _BLOCKS:
+            xs = [points[key][0] for key in part.nodes]
+            text = part.name if part.kind == "DISPLAY" else f"{part.name}  {part.value}"
+            text_bounds.append(((min(xs)+max(xs))/2, _font(14).getlength(text), "centre"))
+            continue
+        if part.kind == "vcc":
+            text_bounds.append((x1, _font(14).getlength(part.value), "centre"))
             continue
         text = f"{part.name}  {part.value or (part.kind if part.kind in _GATES else '')}".strip()
         text_bounds.append((x1+23 if x1 == x2 else (x1+x2)/2, _font(14).getlength(text),
@@ -290,6 +409,11 @@ def render_png(source: str, *, theme: str = "light") -> bytes:
                 draw.line((x, y, x, y+14), fill=wire, width=3)
                 for span, down in [(12, 14), (8, 19), (4, 24)]:
                     draw.line((x-span, y+down, x+span, y+down), fill=ink, width=2)
+            elif part.kind == "vcc":
+                x, y = pins[0]
+                draw.line((x, y, x, y-18), fill=wire, width=3)
+                draw.line((x-10, y-18, x+10, y-18), fill=ink, width=3)
+                draw.text((x, y-23), part.value, fill=accent, font=_font(14), anchor="mb")
             elif part.kind == "label":
                 x, y = pins[0]
                 label_width = draw.textlength(part.value, font=_font(14))
@@ -298,6 +422,8 @@ def render_png(source: str, *, theme: str = "light") -> bytes:
                 continue
             elif part.kind in _GATES:
                 _draw_gate(draw, part, pins, ink, wire, bg)
+            elif part.kind in _BLOCKS:
+                _draw_block(draw, part, pins, ink, wire, accent, bg, inactive)
             else:
                 _draw_part(draw, part, pins, ink, wire, accent, bg)
             for key in part.nodes:
